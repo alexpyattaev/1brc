@@ -48,6 +48,38 @@ impl State {
     }
 }
 
+struct MyString {
+    buf: [u8; 100],
+    len: usize,
+}
+
+impl MyString {
+    fn new(src: &[u8]) -> Self {
+        let mut b = [0; 100];
+        b[0..src.len()].copy_from_slice(src);
+        Self {
+            buf: b,
+            len: src.len(),
+        }
+    }
+}
+
+impl std::ops::Deref for MyString {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        unsafe {
+            let s = std::str::from_utf8_unchecked(&self.buf[0..self.len]);
+            s
+        }
+    }
+}
+
+impl std::hash::Hash for MyString {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write(&self.buf[0..self.len]);
+    }
+}
+
 ///Makes str from u8 through unsafe cast
 #[inline(always)]
 fn make_str(x: &[u8]) -> &str {
@@ -57,13 +89,17 @@ fn make_str(x: &[u8]) -> &str {
     }
 }
 
-
 ///Interns an str in a vector for later use. Cheap-o-bump-alloc, essentially.
 #[inline(always)]
 fn intern_str(stringstore: &mut Vec<u8>, x: &str) -> &'static str {
     let start = stringstore.len();
-    stringstore.extend_from_slice(x.as_bytes());
     let len = x.len();
+    // let spare_cap = stringstore.spare_capacity_mut();
+    // if spare_cap.len() < len{
+    //     println!("Stringstore len is {}", stringstore.len());
+    //     panic!("Not enuf string store!");
+    // }
+    stringstore.extend_from_slice(x.as_bytes());    
     unsafe {
         let x = std::str::from_utf8_unchecked(&stringstore[start..start + len]);
         (x as *const str).as_ref().unwrap_unchecked()
@@ -77,36 +113,56 @@ fn unintern_str(stringstore: &mut Vec<u8>, x: &str) {
     }
 }
 #[inline(always)]
-fn parse_stuff(stringstore: &mut Vec<u8>, line:&[u8])->Result<(&'static str, f32), &'static str>
-{
+fn parse_stuff(
+    stringstore: &mut Vec<u8>,
+    line: &[u8],
+) -> Result<(&'static str, f32), &'static str> {
     let mut parts = line.split(|&e| e == b';');
 
-        let name = make_str(parts.next().ok_or("there must be a city name")?);
-        let name = intern_str(stringstore, name);
+    let name = make_str(parts.next().ok_or("there must be a city name")?);
+    let name = intern_str(stringstore, name);
 
-        let value = make_str(parts.next().ok_or("there must be a value")?);
-        let value: f32 = value.parse().map_err(|e| "Value must be a float")?;
-    Ok((name,value))
+    let value = make_str(parts.next().ok_or("there must be a value")?);
+    let value: f32 = value.parse().map_err(|_| "Value must be a float")?;
+    Ok((name, value))
 }
 
 #[inline(always)]
+fn parse_stuff_fast(
+    stringstore: &mut Vec<u8>,
+    line: &[u8],
+) -> (&'static str, f32){
+    let mut parts = line.split(|&e| e == b';');
+    unsafe{
+    let name = make_str(parts.next().unwrap_unchecked());
+    let name = intern_str(stringstore, name);
+
+    let value = make_str(parts.next().unwrap_unchecked());
+    let value: f32 = value.parse().unwrap_unchecked();
+    
+    (name, value)
+    }
+}
+
+
 fn make_map<'a>(
     stringstore: &mut Vec<u8>,
     i: impl Iterator<Item = &'a [u8]>,
 ) -> HashMap<&'static str, State> {
-    let mut state: HashMap<&'static str, State> = Default::default();
+    let mut state: HashMap<&'static str, State> = HashMap::with_capacity(1024);
     for line in i {
-        if line.len()==0{
+        if line.len() == 0 {
             continue;
         }
-        let (name,value) = match parse_stuff(stringstore, line){
-            Ok(v)=>v,
-            Err(e)=>{
+        /*let (name, value) = match parse_stuff(stringstore, line) {
+            Ok(v) => v,
+            Err(e) => {
                 println!("Got error {e}");
-                println!("while parsing line {:?}",line);
+                println!("while parsing line {:?}", line);
                 panic!("Cant work");
             }
-        }; 
+        };*/
+        let (name, value) = parse_stuff_fast(stringstore, line);
         state
             .entry(name)
             .and_modify(|v| {
@@ -122,14 +178,13 @@ fn make_map<'a>(
     state
 }
 
-#[inline(always)]
-fn solve_for_part(stringstore: &mut Vec<u8>, mem: &[u8]) -> HashMap<&'static str, State> {
-    dbg!(mem.len());
+
+fn solve_for_part(stringstore: &mut Vec<u8>, mem: &[u8]) -> HashMap<&'static str, State> {    
     let iter = mem.split(|&e| e == b'\n');
     make_map(stringstore, iter)
 }
 
-#[inline(always)]
+
 fn merge(a: &mut HashMap<&'static str, State>, b: &HashMap<&'static str, State>) {
     for (k, v) in b {
         a.entry(k).or_default().merge(v);
@@ -137,12 +192,13 @@ fn merge(a: &mut HashMap<&'static str, State>, b: &HashMap<&'static str, State>)
 }
 
 fn main() {
-    let cores: usize = std::thread::available_parallelism().unwrap().into();
-    println!("Working with {cores} cores");
+    let avail_cores: usize = std::thread::available_parallelism().unwrap().into();
+    let cores = avail_cores - avail_cores/4;
+    println!("Working with {cores} cores out of {avail_cores}");
     // malloc is for the weak, we will allocate a string storage bump allocator per thread and just never free it.
     // This allows us to pretend that everything is 'static str.
     let mut stringstores: Vec<_> = (0..cores)
-        .map(|_| Vec::with_capacity(1024 * 1024 * 256))
+        .map(|_| Vec::with_capacity(1024 * 1024 * 128))
         .collect();
 
     let path = match std::env::args().skip(1).next() {
@@ -156,11 +212,10 @@ fn main() {
     let chunk_size = total_len / cores;
 
     //let mmap = unsafe { memmap2::MmapOptions::new().populate().map(&file).unwrap() };
-    let mmap = unsafe { memmap2::MmapOptions::new().map(&file).unwrap() };
+    //let mmap = unsafe { memmap2::MmapOptions::new().map(&file).unwrap() };
+    let mmap = unsafe { memmap::MmapOptions::new().map(&file).unwrap() };
 
-    
-    
-    let mut chunks: Vec<_> = vec![];
+    let mut chunks: Vec<_> = Vec::with_capacity(cores);
     let search_area = 256;
     let mut start = 0;
     for _ in 0..cores - 1 {
@@ -173,13 +228,13 @@ fn main() {
                 break idx;
             }
         };
-    
+
         let end = end + next_new_line;
         chunks.push(&mmap[start..end]);
         start = end + 1;
     }
     chunks.push(&mmap[start..mmap.len()]);
-    
+
     let state = std::thread::scope(|s| {
         let join_handles: Vec<_> = chunks
             .into_iter()
@@ -190,21 +245,13 @@ fn main() {
         let mut state = HashMap::<&'static str, State>::new();
         for jh in join_handles {
             let res = jh.join().unwrap();
+            dbg!("Merging data...");
             merge(&mut state, &res);
         }
         state
     });
 
-    /*let parts: Vec<_> = chunks
-        .par_iter()
-        .map(|r| solve_for_part(*r, &mmap))
-        .collect();
-    */
-    /*let state: HashMap<&str, State> = parts.into_iter().fold(Default::default(), |mut a, b| {
-        merge(&mut a, &b);
-        a
-    });*/
-    //dbg!(&state.keys());
+    
     let mut all: Vec<_> = state.into_iter().collect();
     all.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     print!("{{");
