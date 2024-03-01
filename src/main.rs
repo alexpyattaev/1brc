@@ -251,9 +251,9 @@ fn main() {
 
         for jh in join_handles {
             let res = jh.join().unwrap();
-            dbg!("Merging data...", res.len());
+            //dbg!("Merging data...", res.len());
             merge(&mut state, &res);
-            dbg!("Merged!");
+            //dbg!("Merged!");
         }
         state
     });
