@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 memmap2 = "0.9.4"
-memmap="0.7.0"
+
 
 [profile.release]
 lto = "fat"

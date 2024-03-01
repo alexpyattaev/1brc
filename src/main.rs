@@ -127,7 +127,7 @@ fn parse_stuff(
     Ok((name, value))
 }
 
-#[inline(always)]
+//#[inline(always)]
 fn parse_stuff_fast(
     stringstore: &mut Vec<u8>,
     line: &[u8],
@@ -138,8 +138,10 @@ fn parse_stuff_fast(
     let name = intern_str(stringstore, name);
 
     let value = make_str(parts.next().unwrap_unchecked());
-    let value: f32 = value.parse().unwrap_unchecked();
-    
+    let mut vparts = value.split(|e| e== '.');
+    let vint:i32 = vparts.next().unwrap_unchecked().parse().unwrap_unchecked();
+    let vfrac:u32 = vparts.next().unwrap_unchecked().parse().unwrap_unchecked();
+    let value:f32 = vint as f32 + (vfrac as f32 ) / 10.0;
     (name, value)
     }
 }
@@ -193,9 +195,9 @@ fn merge(a: &mut HashMap<&'static str, State>, b: &HashMap<&'static str, State>)
 
 fn main() {
     let avail_cores: usize = std::thread::available_parallelism().unwrap().into();
-    let cores = avail_cores - avail_cores/4;
-    println!("Working with {cores} cores out of {avail_cores}");
-    // malloc is for the weak, we will allocate a string storage bump allocator per thread and just never free it.
+    let cores = avail_cores;
+    
+    // malloc is for the weak, we will allocate a string storage bump allocator per thread.
     // This allows us to pretend that everything is 'static str.
     let mut stringstores: Vec<_> = (0..cores)
         .map(|_| Vec::with_capacity(1024 * 1024 * 128))
@@ -208,18 +210,21 @@ fn main() {
     let file = File::open(path).unwrap();
     let metadata = file.metadata().unwrap();
     let total_len = metadata.len() as usize;
-
+    
     let chunk_size = total_len / cores;
 
+    let bias = 1000 * 1000;
+    let mut chunk_size = chunk_size - bias * cores;
     //let mmap = unsafe { memmap2::MmapOptions::new().populate().map(&file).unwrap() };
-    //let mmap = unsafe { memmap2::MmapOptions::new().map(&file).unwrap() };
-    let mmap = unsafe { memmap::MmapOptions::new().map(&file).unwrap() };
+    let mmap = unsafe { memmap2::MmapOptions::new().map(&file).unwrap() };
+    
 
     let mut chunks: Vec<_> = Vec::with_capacity(cores);
     let search_area = 256;
     let mut start = 0;
     for _ in 0..cores - 1 {
         let end = start + chunk_size;
+        chunk_size += bias;
         let slice = &mmap[end..end + search_area];
         let mut iter = slice.into_iter().enumerate();
         let next_new_line = loop {
@@ -242,11 +247,13 @@ fn main() {
             .map(|(ch, ss)| s.spawn(|| solve_for_part(ss, ch)))
             .collect();
 
-        let mut state = HashMap::<&'static str, State>::new();
+        let mut state = HashMap::<&'static str, State>::with_capacity(1024*8);
+
         for jh in join_handles {
             let res = jh.join().unwrap();
-            dbg!("Merging data...");
+            dbg!("Merging data...", res.len());
             merge(&mut state, &res);
+            dbg!("Merged!");
         }
         state
     });
