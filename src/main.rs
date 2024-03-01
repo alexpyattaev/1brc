@@ -11,6 +11,7 @@ struct State {
 }
 
 impl Default for State {
+    #[inline(always)]
     fn default() -> Self {
         Self {
             min: f32::MAX,
@@ -22,6 +23,7 @@ impl Default for State {
 }
 
 impl Display for State {
+    #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let avg = self.sum / (self.count as f32);
         write!(f, "{:.1}/{avg:.1}/{:.1}", self.min, self.max)
@@ -29,6 +31,7 @@ impl Display for State {
 }
 
 impl State {
+    #[inline(always)]
     fn update(&mut self, v: f32) {
         self.min = self.min.min(v);
         self.max = self.max.max(v);
@@ -36,6 +39,7 @@ impl State {
         self.sum += v;
     }
 
+    #[inline(always)]
     fn merge(&mut self, other: &Self) {
         self.min = self.min.min(other.min);
         self.max = self.max.max(other.max);
@@ -45,13 +49,17 @@ impl State {
 }
 
 ///Makes str from u8 through unsafe cast
+#[inline(always)]
 fn make_str(x: &[u8]) -> &str {
     unsafe {
         let s = std::str::from_utf8_unchecked(x);
         s
     }
 }
+
+
 ///Interns an str in a vector for later use. Cheap-o-bump-alloc, essentially.
+#[inline(always)]
 fn intern_str(stringstore: &mut Vec<u8>, x: &str) -> &'static str {
     let start = stringstore.len();
     stringstore.extend_from_slice(x.as_bytes());
@@ -62,11 +70,13 @@ fn intern_str(stringstore: &mut Vec<u8>, x: &str) -> &'static str {
     }
 }
 
+#[inline(always)]
 fn unintern_str(stringstore: &mut Vec<u8>, x: &str) {
     unsafe {
         stringstore.set_len(stringstore.len() - x.len());
     }
 }
+#[inline(always)]
 fn parse_stuff(stringstore: &mut Vec<u8>, line:&[u8])->Result<(&'static str, f32), &'static str>
 {
     let mut parts = line.split(|&e| e == b';');
@@ -79,6 +89,7 @@ fn parse_stuff(stringstore: &mut Vec<u8>, line:&[u8])->Result<(&'static str, f32
     Ok((name,value))
 }
 
+#[inline(always)]
 fn make_map<'a>(
     stringstore: &mut Vec<u8>,
     i: impl Iterator<Item = &'a [u8]>,
@@ -86,7 +97,7 @@ fn make_map<'a>(
     let mut state: HashMap<&'static str, State> = Default::default();
     for line in i {
         if line.len()==0{
-            break;
+            continue;
         }
         let (name,value) = match parse_stuff(stringstore, line){
             Ok(v)=>v,
@@ -111,12 +122,14 @@ fn make_map<'a>(
     state
 }
 
+#[inline(always)]
 fn solve_for_part(stringstore: &mut Vec<u8>, mem: &[u8]) -> HashMap<&'static str, State> {
     dbg!(mem.len());
     let iter = mem.split(|&e| e == b'\n');
     make_map(stringstore, iter)
 }
 
+#[inline(always)]
 fn merge(a: &mut HashMap<&'static str, State>, b: &HashMap<&'static str, State>) {
     for (k, v) in b {
         a.entry(k).or_default().merge(v);
@@ -129,7 +142,7 @@ fn main() {
     // malloc is for the weak, we will allocate a string storage bump allocator per thread and just never free it.
     // This allows us to pretend that everything is 'static str.
     let mut stringstores: Vec<_> = (0..cores)
-        .map(|_| Vec::with_capacity(1024 * 1024 * 16))
+        .map(|_| Vec::with_capacity(1024 * 1024 * 256))
         .collect();
 
     let path = match std::env::args().skip(1).next() {
@@ -142,24 +155,11 @@ fn main() {
 
     let chunk_size = total_len / cores;
 
-    let mmap = unsafe { memmap2::MmapOptions::new().populate().map(&file).unwrap() };
+    //let mmap = unsafe { memmap2::MmapOptions::new().populate().map(&file).unwrap() };
+    let mmap = unsafe { memmap2::MmapOptions::new().map(&file).unwrap() };
 
-    /*
-    let block = 1024 * 1024 * 16;
-    let mut buf: Vec<u8> =  std::iter::once(0u8).cycle().take(block).collect();
-
-    loop {
-        let n = file.read(&mut buf).unwrap();
-        for &e in &buf{
-            s += e as u64;
-        }
-        //let sln = solve_for_part((0, n), &buf);
-        //dbg!(sln);
-        if n ==0{
-            break;
-        }
-    }*/
-    //let mut chunks: Vec<(usize, usize)> = vec![];
+    
+    
     let mut chunks: Vec<_> = vec![];
     let search_area = 256;
     let mut start = 0;
@@ -173,13 +173,7 @@ fn main() {
                 break idx;
             }
         };
-        // let next_new_line = match memchr::memchr(b'\n', &mmap[end..]) {
-        //     Some(v) => v,
-        //     None => {
-        //         assert_eq!(end, mmap.len());
-        //         0
-        //     }
-        // };
+    
         let end = end + next_new_line;
         chunks.push(&mmap[start..end]);
         start = end + 1;
