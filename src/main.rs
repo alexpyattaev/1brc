@@ -61,19 +61,26 @@ struct MyString {
 }
 
 impl MyString {
-    fn new(src: &[u8]) -> Self {
+    fn new(src: &str) -> Self {
         debug_assert!(src.len() < 256);
         if src.len() > STR_INTERNED{
             todo!("Heap allocations not done");
         }
         let mut b = [0; STR_INTERNED];
-        b[0..src.len()].copy_from_slice(src);
+        b[0..src.len()].copy_from_slice(src.as_bytes());
         Self {
             buf: b,
             len: src.len() as u8,
         }
     }
 }
+
+impl core::cmp::PartialEq for MyString{
+    fn eq(&self, other: &Self) -> bool {
+        self.buf.eq(&other.buf)
+    }
+}
+impl core::cmp::Eq for MyString{}
 
 impl std::ops::Deref for MyString {
     type Target = str;
@@ -89,6 +96,18 @@ impl std::ops::Deref for MyString {
 impl std::hash::Hash for MyString {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         state.write(&self.buf[0..self.len as usize]);
+    }
+}
+
+impl std::fmt::Display for MyString{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self)
+    }
+}
+
+impl Clone for MyString{
+    fn clone(&self) -> Self {
+        Self::new(self)
     }
 }
 
@@ -139,21 +158,22 @@ fn parse_stuff(
     Ok((name, value))
 }
 
-type MapType = HashMap<&'static str, State>;
+type MapType = HashMap<MyString, State>;
 
 
 //#[inline(always)]
 fn parse_stuff_fast(
     stringstore: &mut Vec<u8>,
     line: &str,
-) -> (&'static str, f32){
+) -> (MyString, f32){
     unsafe{    
     let (name,value) = line.split_once(';').unwrap();
-    let name = intern_str(stringstore, name);
+    //let name = intern_str(stringstore, name);
     let (vint, vfrac) = value.split_once( '.').unwrap_unchecked();
     let vint:i32 = vint.parse().unwrap_unchecked();
     let vfrac:u32 = vfrac.parse().unwrap_unchecked();
     let value:f32 = vint as f32 + (vfrac as f32 ) / 10.0;
+    let name = MyString::new(name);
     (name, value)
     }
 }
@@ -177,7 +197,7 @@ where 'b: 'a {
             .entry(name)
             .and_modify(|v| {
                 v.update(value);
-                unintern_str(stringstore, name);
+                //unintern_str(stringstore, name);
             })
             .or_insert({
                 let mut s = State::default();
@@ -229,7 +249,7 @@ fn solve_for_part<'a, 'b>(stringstore: &mut Vec<u8>, mem: &'a [u8],  next_chunk:
 
 fn merge(a: &mut MapType, b: &MapType) {
     for (k, v) in b {
-        a.entry(k).or_default().merge(v);
+        a.entry(k.clone()).or_default().merge(v);
     }
 }
 
