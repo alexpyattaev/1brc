@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::{fmt::Display, fs::File};
 
 #[derive(Debug)]
@@ -48,18 +49,28 @@ impl State {
     }
 }
 
+fn next_newline(input: &[u8]) -> Option<usize> {
+    input.iter().position(|&b| b == b'\n')
+}
+
+const STR_INTERNED:usize=63;
+
 struct MyString {
-    buf: [u8; 100],
-    len: usize,
+    buf: [u8; STR_INTERNED],
+    len: u8,
 }
 
 impl MyString {
     fn new(src: &[u8]) -> Self {
-        let mut b = [0; 100];
+        debug_assert!(src.len() < 256);
+        if src.len() > STR_INTERNED{
+            todo!("Heap allocations not done");
+        }
+        let mut b = [0; STR_INTERNED];
         b[0..src.len()].copy_from_slice(src);
         Self {
             buf: b,
-            len: src.len(),
+            len: src.len() as u8,
         }
     }
 }
@@ -67,8 +78,9 @@ impl MyString {
 impl std::ops::Deref for MyString {
     type Target = str;
     fn deref(&self) -> &Self::Target {
+        
         unsafe {
-            let s = std::str::from_utf8_unchecked(&self.buf[0..self.len]);
+            let s = std::str::from_utf8_unchecked(&self.buf[0..self.len as usize]);
             s
         }
     }
@@ -76,7 +88,7 @@ impl std::ops::Deref for MyString {
 
 impl std::hash::Hash for MyString {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write(&self.buf[0..self.len]);
+        state.write(&self.buf[0..self.len as usize]);
     }
 }
 
@@ -127,36 +139,27 @@ fn parse_stuff(
     Ok((name, value))
 }
 
+type MapType = HashMap<&'static str, State>;
+
+
 //#[inline(always)]
 fn parse_stuff_fast(
     stringstore: &mut Vec<u8>,
-    line: &[u8],
+    line: &str,
 ) -> (&'static str, f32){
-    let mut parts = line.split(|&e| e == b';');
-    unsafe{
-    let name = make_str(parts.next().unwrap_unchecked());
+    unsafe{    
+    let (name,value) = line.split_once(';').unwrap();
     let name = intern_str(stringstore, name);
-
-    let value = make_str(parts.next().unwrap_unchecked());
-    let mut vparts = value.split(|e| e== '.');
-    let vint:i32 = vparts.next().unwrap_unchecked().parse().unwrap_unchecked();
-    let vfrac:u32 = vparts.next().unwrap_unchecked().parse().unwrap_unchecked();
+    let (vint, vfrac) = value.split_once( '.').unwrap_unchecked();
+    let vint:i32 = vint.parse().unwrap_unchecked();
+    let vfrac:u32 = vfrac.parse().unwrap_unchecked();
     let value:f32 = vint as f32 + (vfrac as f32 ) / 10.0;
     (name, value)
     }
 }
 
 
-fn make_map<'a>(
-    stringstore: &mut Vec<u8>,
-    i: impl Iterator<Item = &'a [u8]>,
-) -> HashMap<&'static str, State> {
-    let mut state: HashMap<&'static str, State> = HashMap::with_capacity(1024);
-    for line in i {
-        if line.len() == 0 {
-            continue;
-        }
-        /*let (name, value) = match parse_stuff(stringstore, line) {
+       /*let (name, value) = match parse_stuff(stringstore, line) {
             Ok(v) => v,
             Err(e) => {
                 println!("Got error {e}");
@@ -164,6 +167,11 @@ fn make_map<'a>(
                 panic!("Cant work");
             }
         };*/
+ 
+
+fn update_map<'a, 'b>(stringstore: &mut Vec<u8>,state: &'a mut MapType, mem: &'b str)
+where 'b: 'a {
+    for line in mem.lines() {
         let (name, value) = parse_stuff_fast(stringstore, line);
         state
             .entry(name)
@@ -176,22 +184,56 @@ fn make_map<'a>(
                 s.update(value);
                 s
             });
+        //state.entry(name.into()).or_default().update(value);
     }
+}
+
+fn solve_for_part<'a, 'b>(stringstore: &mut Vec<u8>, mem: &'a [u8],  next_chunk: &'b AtomicUsize) -> MapType {
+    let mut state: MapType = MapType::with_capacity(1024);
+ 
+    loop {
+        // bump the start to the start of the next line
+        let start = next_chunk.fetch_add(CHUNK_SIZE, Ordering::Relaxed);
+ 
+        if start > mem.len() {
+            break;
+        }
+        let actual_start = match start {
+            0 => start,
+            _ => {
+                let Some(actual_start) = next_newline(&mem[start..]) else {break};
+                start + actual_start + 1
+            }
+        };
+        if start > mem.len() {
+            break;
+        }
+ 
+        // bump the end until the end of the last line
+        let end = mem.len().min(start + CHUNK_SIZE);
+        let next_new_line = match next_newline(&mem[end..]){
+            Some(v) => v,
+            None => {
+                assert_eq!(end, mem.len());
+                0
+            }
+        };
+        let actual_end = end + next_new_line;
+ 
+        update_map(stringstore, &mut state, unsafe { std::str::from_utf8_unchecked(&mem[actual_start..actual_end])});
+    };
+ 
     state
 }
 
 
-fn solve_for_part(stringstore: &mut Vec<u8>, mem: &[u8]) -> HashMap<&'static str, State> {    
-    let iter = mem.split(|&e| e == b'\n');
-    make_map(stringstore, iter)
-}
-
-
-fn merge(a: &mut HashMap<&'static str, State>, b: &HashMap<&'static str, State>) {
+fn merge(a: &mut MapType, b: &MapType) {
     for (k, v) in b {
         a.entry(k).or_default().merge(v);
     }
 }
+
+const CHUNK_SIZE:usize = 1024*1024*32; //Operate on chunks of several MB at a time
 
 fn main() {
     let avail_cores: usize = std::thread::available_parallelism().unwrap().into();
@@ -203,6 +245,7 @@ fn main() {
         .map(|_| Vec::with_capacity(1024 * 1024 * 128))
         .collect();
 
+    
     let path = match std::env::args().skip(1).next() {
         Some(path) => path,
         None => "measurements.txt".to_owned(),
@@ -210,50 +253,25 @@ fn main() {
     let file = File::open(path).unwrap();
     let metadata = file.metadata().unwrap();
     let total_len = metadata.len() as usize;
-    
-    let chunk_size = total_len / cores;
+    println!("Total file size is {} MB", total_len/1024);
+    let next_chunk = AtomicUsize::new(0);
 
-    let bias = 1000 * 1000;
-    let mut chunk_size = chunk_size - bias * cores;
+    
     //let mmap = unsafe { memmap2::MmapOptions::new().populate().map(&file).unwrap() };
     let mmap = unsafe { memmap2::MmapOptions::new().map(&file).unwrap() };
     
 
-    let mut chunks: Vec<_> = Vec::with_capacity(cores);
-    let search_area = 256;
-    let mut start = 0;
-    for _ in 0..cores - 1 {
-        let end = start + chunk_size;
-        chunk_size += bias;
-        let slice = &mmap[end..end + search_area];
-        let mut iter = slice.into_iter().enumerate();
-        let next_new_line = loop {
-            let (idx, &c) = iter.next().unwrap();
-            if c == b'\n' {
-                break idx;
-            }
-        };
-
-        let end = end + next_new_line;
-        chunks.push(&mmap[start..end]);
-        start = end + 1;
-    }
-    chunks.push(&mmap[start..mmap.len()]);
-
     let state = std::thread::scope(|s| {
-        let join_handles: Vec<_> = chunks
-            .into_iter()
-            .zip(stringstores.iter_mut())
-            .map(|(ch, ss)| s.spawn(|| solve_for_part(ss, ch)))
+        let join_handles: Vec<_> = stringstores.iter_mut()
+            .map(|ss| s.spawn(|| solve_for_part(ss,&mmap, &next_chunk)))
             .collect();
 
-        let mut state = HashMap::<&'static str, State>::with_capacity(1024*8);
+        let mut state = MapType::with_capacity(1024*8);
 
         for jh in join_handles {
             let res = jh.join().unwrap();
-            //dbg!("Merging data...", res.len());
+            dbg!("Merging data...", res.len());
             merge(&mut state, &res);
-            //dbg!("Merged!");
         }
         state
     });
